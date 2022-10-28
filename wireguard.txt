@@ -1,0 +1,117 @@
+SERVER SIDE
+
+pacman -Syyu linux-headers wireguard-dkms wireguard-tools
+
+echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.d/99-sysctl.conf
+
+reboot now
+
+modprobe wireguard && lsmod | grep wireguard
+
+mkdir ~/wireguard && cd ~/wireguard
+
+wg genkey | tee server_private_key | wg pubkey > server_public_key
+wg genkey | tee client_private_key | wg pubkey > client_public_key
+## repeat for client2, client3 ...
+
+ufw allow 22/tcp
+ufw allow 55000/udp
+
+## do this after every reboot
+sysctl -p (only if configuration path is /etc/sysctl.conf)
+ufw enable
+ufw status verbose
+
+nano /etc/wireguard/wg0.conf
+
+----- wg0.conf -----
+
+[Interface]
+PrivateKey = <server_private_key>
+Address = 10.0.0.1/24
+## change to any unreserved port
+ListenPort = 55000
+SaveConfig = false
+
+PostUp = iptables -A FORWARD -i %i -j ACCEPT; iptables -A FORWARD -o %i -j ACCEPT; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+PostDown = iptables -D FORWARD -i %i -j ACCEPT; iptables -D FORWARD -o %i -j ACCEPT; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE
+
+
+[Peer]
+PublicKey = <client_public_key>
+AllowedIPs = 10.0.0.2/32
+
+[Peer]
+PublicKey = <client2_public_key>
+AllowedIPs = 10.0.0.3/32
+
+## increment AllowedIPs by 1 for each new peer
+
+--------------------
+
+
+
+CLIENT SIDE (linux only, on mobile devices scan the qr-code of config) (qr-code is generated with "qrencode -t ansiutf8 < config.conf")
+
+nano /etc/wireguard/wg0.conf
+
+----- wg0.conf -----
+
+[Interface]
+Address = <the one in AllowedIPs for each corresponding peer>
+PrivateKey = <client_private_key>
+## 1.1.1.1 = CloudFlare, 8.8.8.8 = Google, 10.0.0.1 = let VPN server resolve
+DNS = 1.1.1.1
+
+## kill switch
+#PostUp = iptables -I OUTPUT ! -o %i -m mark ! --mark $(wg show %i fwmark) -m addrtype ! --dst-type LOCAL -j REJECT && notify-send "VPN connected"
+#PreDown = iptables -D OUTPUT ! -o %i -m mark ! --mark $(wg show %i fwmark) -m addrtype ! --dst-type LOCAL -j REJECT && notify-send "VPN disconnected"
+
+[Peer]
+PublicKey = <server_public_key>
+Endpoint = <vpn_server_public_ip>:55000
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 20
+
+--------------------
+
+
+
+COMMON (repeat for server and each client)
+
+chown -v root:root /etc/wireguard
+chmod -v 600 /etc/wireguard
+
+wg-quick up wg0
+wg-quick down wg0
+
+wg show
+ifconfig wg0
+
+## launch vpn at system boot
+systemctl enable wg-quick@wg0.service
+
+
+
+KILL SWITCH (ANOTHER WAY)
+
+create 2 shell scripts and put them in /etc/wireguard/
+
+killswitch-on.sh
+
+    ufw reset --force
+    ufw default deny incoming
+    ufw default deny outgoing
+    ufw allow out on wg0 from any to any
+    ufw allow in on wg0 from any to any
+    ufw enable
+
+killswitch-off.sh
+
+    ufw reset --force
+    ufw disable
+
+in client wg0.conf put:
+
+PostUp = sh /etc/wireguard/killswitch-on.sh
+PreDown = sh /etc/wireguard/killswitch-off.sh
