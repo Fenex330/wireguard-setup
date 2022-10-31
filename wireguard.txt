@@ -107,7 +107,7 @@ killswitch-on.sh
 
 killswitch-off.sh
 
-    ufw reset --force
+    ufw --force reset
     ufw disable
 
 in client wg0.conf put:
